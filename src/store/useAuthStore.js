@@ -44,6 +44,8 @@ export const useAuthStore = defineStore('auth', () => {
       
       if (signUpError) throw signUpError
       
+      // Set user state immediately after successful signup (like signIn does)
+      user.value = data.user
       return data
     } catch (err) {
       error.value = err.message

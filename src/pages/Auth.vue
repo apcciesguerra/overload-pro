@@ -111,11 +111,13 @@
 <script>
 import { ref, computed } from 'vue'
 import { useAuthStore } from '../store/useAuthStore'
+import { useRouter } from 'vue-router'
 
 export default {
   name: 'Auth',
   setup() {
     const authStore = useAuthStore()
+    const router = useRouter()
     const activeTab = ref('login')
     const showResetPassword = ref(false)
     const resetEmail = ref('')
@@ -144,6 +146,9 @@ export default {
         } else {
           await authStore.signUp(form.value.email, form.value.password)
         }
+        
+        // Redirect to workouts page after successful auth
+        router.push('/workouts')
       } catch (error) {
         console.error('Auth error:', error)
       }
