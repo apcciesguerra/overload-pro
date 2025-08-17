@@ -2,15 +2,24 @@ import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { supabase, TABLES } from '../lib/supabase'
 import { useAuthStore } from './useAuthStore'
+import { progressiveOverload, analyzeRecoveryFactors } from '../lib/progressiveOverload'
 
 export const useWorkoutStore = defineStore('workout', () => {
   const authStore = useAuthStore()
   
   // State
   const folders = ref([])
-  const routines = ref([])
+  const workoutPlans = ref([])
   const exercises = ref([])
   const exerciseLogs = ref([])
+  const activeWorkout = ref(null)
+  const workoutSettings = ref({
+    defaultRestTime: 90, // seconds
+    enableNotifications: true,
+    soundEnabled: true,
+    autoProgress: true,
+    weightUnit: 'kg'
+  })
   const loading = ref(false)
   const error = ref(null)
 
@@ -19,13 +28,27 @@ export const useWorkoutStore = defineStore('workout', () => {
     folders.value.filter(folder => folder.user_id === authStore.user?.id)
   )
 
-  const routinesByFolder = computed(() => (folderId) =>
-    routines.value.filter(routine => routine.folder_id === folderId)
+  const plansByFolder = computed(() => (folderId) =>
+    workoutPlans.value.filter(plan => plan.folder_id === folderId)
   )
 
-  const exercisesByRoutine = computed(() => (routineId) =>
-    exercises.value.filter(exercise => exercise.routine_id === routineId)
+  const exercisesByPlan = computed(() => (planId) =>
+    exercises.value.filter(exercise => exercise.plan_id === planId)
+      .sort((a, b) => a.order_index - b.order_index)
   )
+
+  const lastWorkoutForExercise = computed(() => (exerciseId) => {
+    return exerciseLogs.value
+      .filter(log => log.exercise_id === exerciseId)
+      .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))[0]
+  })
+
+  const progressHistory = computed(() => (exerciseId, limit = 10) => {
+    return exerciseLogs.value
+      .filter(log => log.exercise_id === exerciseId)
+      .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
+      .slice(0, limit)
+  })
 
   // Initialize store
   async function init() {
@@ -35,15 +58,29 @@ export const useWorkoutStore = defineStore('workout', () => {
       loading.value = true
       await Promise.all([
         fetchFolders(),
-        fetchRoutines(),
+        fetchWorkoutPlans(),
         fetchExercises(),
-        fetchExerciseLogs()
+        fetchExerciseLogs(),
+        loadSettings()
       ])
     } catch (err) {
       error.value = err.message
     } finally {
       loading.value = false
     }
+  }
+
+  // Settings operations
+  async function loadSettings() {
+    const stored = localStorage.getItem('workoutSettings')
+    if (stored) {
+      workoutSettings.value = { ...workoutSettings.value, ...JSON.parse(stored) }
+    }
+  }
+
+  async function saveSettings(settings) {
+    workoutSettings.value = { ...workoutSettings.value, ...settings }
+    localStorage.setItem('workoutSettings', JSON.stringify(workoutSettings.value))
   }
 
   // Folder operations
@@ -105,8 +142,8 @@ export const useWorkoutStore = defineStore('workout', () => {
     folders.value = folders.value.filter(f => f.id !== id)
   }
 
-  // Routine operations
-  async function fetchRoutines() {
+  // Workout Plan operations
+  async function fetchWorkoutPlans() {
     const { data, error: fetchError } = await supabase
       .from(TABLES.WORKOUT_ROUTINES)
       .select('*')
@@ -114,15 +151,14 @@ export const useWorkoutStore = defineStore('workout', () => {
       .order('created_at', { ascending: false })
 
     if (fetchError) throw fetchError
-    routines.value = data || []
+    workoutPlans.value = data || []
   }
 
-  async function createRoutine(folderId, name, description = '') {
+  async function createWorkoutPlan(folderId, planData) {
     const { data, error: createError } = await supabase
       .from(TABLES.WORKOUT_ROUTINES)
       .insert({
-        name,
-        description,
+        ...planData,
         folder_id: folderId,
         user_id: authStore.user.id
       })
@@ -130,11 +166,11 @@ export const useWorkoutStore = defineStore('workout', () => {
       .single()
 
     if (createError) throw createError
-    routines.value.unshift(data)
+    workoutPlans.value.unshift(data)
     return data
   }
 
-  async function updateRoutine(id, updates) {
+  async function updateWorkoutPlan(id, updates) {
     const { data, error: updateError } = await supabase
       .from(TABLES.WORKOUT_ROUTINES)
       .update(updates)
@@ -145,15 +181,15 @@ export const useWorkoutStore = defineStore('workout', () => {
 
     if (updateError) throw updateError
     
-    const index = routines.value.findIndex(r => r.id === id)
+    const index = workoutPlans.value.findIndex(p => p.id === id)
     if (index !== -1) {
-      routines.value[index] = data
+      workoutPlans.value[index] = data
     }
     
     return data
   }
 
-  async function deleteRoutine(id) {
+  async function deleteWorkoutPlan(id) {
     const { error: deleteError } = await supabase
       .from(TABLES.WORKOUT_ROUTINES)
       .delete()
@@ -162,7 +198,7 @@ export const useWorkoutStore = defineStore('workout', () => {
 
     if (deleteError) throw deleteError
     
-    routines.value = routines.value.filter(r => r.id !== id)
+    workoutPlans.value = workoutPlans.value.filter(p => p.id !== id)
   }
 
   // Exercise operations
@@ -171,25 +207,32 @@ export const useWorkoutStore = defineStore('workout', () => {
       .from(TABLES.EXERCISES)
       .select('*')
       .eq('user_id', authStore.user.id)
-      .order('created_at', { ascending: false })
+      .order('order_index', { ascending: true })
 
     if (fetchError) throw fetchError
     exercises.value = data || []
   }
 
-  async function createExercise(routineId, exerciseData) {
+  async function createExercise(planId, exerciseData) {
+    // Get the max order index for this plan
+    const planExercises = exercisesByPlan(planId)
+    const maxOrder = planExercises.length > 0 
+      ? Math.max(...planExercises.map(e => e.order_index || 0))
+      : -1
+
     const { data, error: createError } = await supabase
       .from(TABLES.EXERCISES)
       .insert({
         ...exerciseData,
-        routine_id: routineId,
+        plan_id: planId,
+        order_index: maxOrder + 1,
         user_id: authStore.user.id
       })
       .select()
       .single()
 
     if (createError) throw createError
-    exercises.value.unshift(data)
+    exercises.value.push(data)
     return data
   }
 
@@ -224,6 +267,29 @@ export const useWorkoutStore = defineStore('workout', () => {
     exercises.value = exercises.value.filter(e => e.id !== id)
   }
 
+  async function reorderExercises(planId, exerciseIds) {
+    const updates = exerciseIds.map((id, index) => ({
+      id,
+      order_index: index
+    }))
+
+    const { error: updateError } = await supabase
+      .from(TABLES.EXERCISES)
+      .upsert(updates)
+      .eq('plan_id', planId)
+      .eq('user_id', authStore.user.id)
+
+    if (updateError) throw updateError
+
+    // Update local state
+    updates.forEach(update => {
+      const exercise = exercises.value.find(e => e.id === update.id)
+      if (exercise) {
+        exercise.order_index = update.order_index
+      }
+    })
+  }
+
   // Exercise log operations
   async function fetchExerciseLogs() {
     const { data, error: fetchError } = await supabase
@@ -236,38 +302,155 @@ export const useWorkoutStore = defineStore('workout', () => {
     exerciseLogs.value = data || []
   }
 
-  async function logExercise(exerciseId, logData) {
+  async function logExerciseSet(exerciseId, setData) {
+    const exercise = exercises.value.find(e => e.id === exerciseId)
+    if (!exercise) throw new Error('Exercise not found')
+
+    // Get previous sessions for this exercise
+    const previousSessions = progressHistory(exerciseId, 5)
+
+    // Calculate progression recommendation
+    const progression = progressiveOverload({
+      repsDone: setData.reps,
+      weight: setData.weight,
+      repsMin: exercise.reps_min,
+      repsMax: exercise.reps_max,
+      rir: setData.rir,
+      previousSessions: previousSessions.map(log => ({
+        repsDone: log.reps,
+        weight: log.weight
+      }))
+    })
+
     const { data, error: createError } = await supabase
       .from(TABLES.EXERCISE_LOGS)
       .insert({
-        ...logData,
+        ...setData,
         exercise_id: exerciseId,
-        user_id: authStore.user.id
+        user_id: authStore.user.id,
+        progression_data: progression,
+        workout_session_id: activeWorkout.value?.id
       })
       .select()
       .single()
 
     if (createError) throw createError
     exerciseLogs.value.unshift(data)
+    
+    return { log: data, progression }
+  }
+
+  async function logWorkoutSession(planId, sessionData) {
+    const { data, error: createError } = await supabase
+      .from('workout_sessions')
+      .insert({
+        plan_id: planId,
+        user_id: authStore.user.id,
+        ...sessionData
+      })
+      .select()
+      .single()
+
+    if (createError) throw createError
     return data
+  }
+
+  // Active workout management
+  async function startWorkout(planId) {
+    const plan = workoutPlans.value.find(p => p.id === planId)
+    if (!plan) throw new Error('Workout plan not found')
+
+    const session = await logWorkoutSession(planId, {
+      started_at: new Date().toISOString(),
+      status: 'in_progress'
+    })
+
+    activeWorkout.value = {
+      ...session,
+      plan,
+      exercises: exercisesByPlan(planId),
+      completedSets: [],
+      currentExerciseIndex: 0
+    }
+
+    return activeWorkout.value
+  }
+
+  async function completeWorkout() {
+    if (!activeWorkout.value) return
+
+    const { error: updateError } = await supabase
+      .from('workout_sessions')
+      .update({
+        completed_at: new Date().toISOString(),
+        status: 'completed',
+        total_sets: activeWorkout.value.completedSets.length
+      })
+      .eq('id', activeWorkout.value.id)
+
+    if (updateError) throw updateError
+
+    const completed = { ...activeWorkout.value }
+    activeWorkout.value = null
+    return completed
+  }
+
+  async function cancelWorkout() {
+    if (!activeWorkout.value) return
+
+    const { error: updateError } = await supabase
+      .from('workout_sessions')
+      .update({
+        completed_at: new Date().toISOString(),
+        status: 'cancelled'
+      })
+      .eq('id', activeWorkout.value.id)
+
+    if (updateError) throw updateError
+    
+    activeWorkout.value = null
+  }
+
+  // Recovery check
+  async function checkRecoveryFactors(factors) {
+    const analysis = analyzeRecoveryFactors(factors)
+    
+    // Store recovery check
+    const { error } = await supabase
+      .from('recovery_checks')
+      .insert({
+        user_id: authStore.user.id,
+        factors,
+        analysis,
+        created_at: new Date().toISOString()
+      })
+
+    if (error) console.error('Failed to save recovery check:', error)
+    
+    return analysis
   }
 
   return {
     // State
     folders,
-    routines,
+    workoutPlans,
     exercises,
     exerciseLogs,
+    activeWorkout,
+    workoutSettings,
     loading,
     error,
     
     // Computed
     foldersByUser,
-    routinesByFolder,
-    exercisesByRoutine,
+    plansByFolder,
+    exercisesByPlan,
+    lastWorkoutForExercise,
+    progressHistory,
     
     // Actions
     init,
+    saveSettings,
     
     // Folder actions
     fetchFolders,
@@ -275,20 +458,30 @@ export const useWorkoutStore = defineStore('workout', () => {
     updateFolder,
     deleteFolder,
     
-    // Routine actions
-    fetchRoutines,
-    createRoutine,
-    updateRoutine,
-    deleteRoutine,
+    // Workout plan actions
+    fetchWorkoutPlans,
+    createWorkoutPlan,
+    updateWorkoutPlan,
+    deleteWorkoutPlan,
     
     // Exercise actions
     fetchExercises,
     createExercise,
     updateExercise,
     deleteExercise,
+    reorderExercises,
     
     // Log actions
     fetchExerciseLogs,
-    logExercise
+    logExerciseSet,
+    logWorkoutSession,
+    
+    // Workout session actions
+    startWorkout,
+    completeWorkout,
+    cancelWorkout,
+    
+    // Recovery
+    checkRecoveryFactors
   }
-}) 
+})

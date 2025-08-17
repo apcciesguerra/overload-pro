@@ -1,82 +1,106 @@
 <template>
   <div class="workouts-page">
-    <div class="page-header">
-      <h1>My Workouts</h1>
-      <button @click="showCreateFolder = true" class="btn btn-primary">
-        Create Folder
-      </button>
+    <!-- Main View Switcher -->
+    <div v-if="!activeWorkout">
+      <!-- Folder View -->
+      <FolderManager
+        v-if="currentView === 'folders'"
+        @folder-selected="selectFolder"
+      />
+
+      <!-- Workout Plans View -->
+      <WorkoutPlanEditor
+        v-else-if="currentView === 'plans' && selectedFolder"
+        :folder="selectedFolder"
+        @back="backToFolders"
+        @start-workout="startWorkout"
+      />
     </div>
-    
-    <div v-if="workoutStore.loading" class="loading-state">
-      <div class="spinner"></div>
-      <p>Loading workouts...</p>
-    </div>
-    
-    <div v-else-if="workoutStore.foldersByUser.length === 0" class="empty-state">
-      <h3>No workout folders yet</h3>
-      <p>Create your first workout folder to get started</p>
-      <button @click="showCreateFolder = true" class="btn btn-primary">
-        Create First Folder
-      </button>
-    </div>
-    
-    <div v-else class="folders-grid">
-      <div 
-        v-for="folder in workoutStore.foldersByUser" 
-        :key="folder.id"
-        class="folder-card card"
-      >
-        <div class="folder-header">
-          <h3>{{ folder.name }}</h3>
-          <div class="folder-actions">
-            <button @click="editFolder(folder)" class="btn btn-secondary btn-sm">
-              Edit
-            </button>
-            <button @click="deleteFolder(folder.id)" class="btn btn-danger btn-sm">
-              Delete
-            </button>
+
+    <!-- Active Workout View -->
+    <ActiveWorkout
+      v-else
+      :workout="activeWorkout"
+      @complete="onWorkoutComplete"
+      @cancel="onWorkoutCancel"
+    />
+
+    <!-- Progress Notification -->
+    <transition name="slide-up">
+      <div v-if="progressNotification" class="progress-notification">
+        <div class="notification-content">
+          <h4>{{ progressNotification.title }}</h4>
+          <p>{{ progressNotification.message }}</p>
+        </div>
+        <button @click="progressNotification = null" class="close-btn">×</button>
+      </div>
+    </transition>
+
+    <!-- Settings Button -->
+    <button 
+      v-if="!activeWorkout"
+      @click="showSettings = true" 
+      class="settings-fab"
+      title="Workout Settings"
+    >
+      ⚙️
+    </button>
+
+    <!-- Settings Modal -->
+    <div v-if="showSettings" class="modal-overlay" @click="showSettings = false">
+      <div class="modal-content" @click.stop>
+        <h2>Workout Settings</h2>
+        
+        <div class="settings-form">
+          <div class="form-group">
+            <label for="default-rest">Default Rest Time (seconds)</label>
+            <input 
+              id="default-rest"
+              v-model.number="settings.defaultRestTime" 
+              type="number" 
+              min="0" 
+              max="600"
+              class="form-input"
+            >
+          </div>
+
+          <div class="form-group">
+            <label for="weight-unit">Weight Unit</label>
+            <select id="weight-unit" v-model="settings.weightUnit" class="form-input">
+              <option value="kg">Kilograms (kg)</option>
+              <option value="lbs">Pounds (lbs)</option>
+            </select>
+          </div>
+
+          <div class="form-group">
+            <label>
+              <input type="checkbox" v-model="settings.enableNotifications">
+              Enable Notifications
+            </label>
+          </div>
+
+          <div class="form-group">
+            <label>
+              <input type="checkbox" v-model="settings.soundEnabled">
+              Enable Sound Effects
+            </label>
+          </div>
+
+          <div class="form-group">
+            <label>
+              <input type="checkbox" v-model="settings.autoProgress">
+              Auto-apply Progressive Overload
+            </label>
           </div>
         </div>
-        
-        <p v-if="folder.description" class="folder-description">
-          {{ folder.description }}
-        </p>
-        
-        <div class="routines-section">
-          <div class="routines-header">
-            <h4>Routines ({{ getRoutinesForFolder(folder.id).length }})</h4>
-            <button @click="showCreateRoutine = folder.id" class="btn btn-primary btn-sm">
-              Add Routine
-            </button>
-          </div>
-          
-          <div v-if="getRoutinesForFolder(folder.id).length === 0" class="empty-routines">
-            <p>No routines yet</p>
-          </div>
-          
-          <div v-else class="routines-list">
-            <div 
-              v-for="routine in getRoutinesForFolder(folder.id)"
-              :key="routine.id"
-              class="routine-item"
-            >
-              <div class="routine-info">
-                <h5>{{ routine.name }}</h5>
-                <p v-if="routine.description">{{ routine.description }}</p>
-              </div>
-              <div class="routine-actions">
-                <button @click="viewRoutine(routine)" class="btn btn-primary btn-sm">
-                  View
-                </button>
-                <button @click="editRoutine(routine)" class="btn btn-secondary btn-sm">
-                  Edit
-                </button>
-                <button @click="deleteRoutine(routine.id)" class="btn btn-danger btn-sm">
-                  Delete
-                </button>
-              </div>
-            </div>
-          </div>
+
+        <div class="modal-actions">
+          <button @click="showSettings = false" class="btn btn-secondary">
+            Cancel
+          </button>
+          <button @click="saveSettings" class="btn btn-primary">
+            Save Settings
+          </button>
         </div>
       </div>
     </div>
@@ -84,70 +108,156 @@
 </template>
 
 <script>
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import { useWorkoutStore } from '../store/useWorkoutStore'
+import FolderManager from '../components/workouts/FolderManager.vue'
+import WorkoutPlanEditor from '../components/workouts/WorkoutPlanEditor.vue'
+import ActiveWorkout from '../components/workouts/ActiveWorkout.vue'
 
 export default {
   name: 'Workouts',
+  components: {
+    FolderManager,
+    WorkoutPlanEditor,
+    ActiveWorkout
+  },
   setup() {
     const workoutStore = useWorkoutStore()
     
-    // Modal states
-    const showCreateFolder = ref(false)
-    const showCreateRoutine = ref(null)
-    
-    // Initialize data
-    onMounted(() => {
-      workoutStore.init()
+    // State
+    const currentView = ref('folders')
+    const selectedFolder = ref(null)
+    const activeWorkout = ref(null)
+    const showSettings = ref(false)
+    const progressNotification = ref(null)
+    const settings = ref({
+      defaultRestTime: 90,
+      weightUnit: 'kg',
+      enableNotifications: true,
+      soundEnabled: true,
+      autoProgress: true
     })
-    
-    // Helper functions
-    const getRoutinesForFolder = (folderId) => {
-      return workoutStore.routinesByFolder(folderId)
-    }
-    
-    const editFolder = (folder) => {
-      console.log('Edit folder:', folder)
-    }
-    
-    const deleteFolder = async (folderId) => {
-      if (confirm('Are you sure you want to delete this folder?')) {
-        try {
-          await workoutStore.deleteFolder(folderId)
-        } catch (error) {
-          console.error('Delete folder error:', error)
+
+    // Initialize
+    onMounted(async () => {
+      await workoutStore.init()
+      
+      // Load settings
+      settings.value = { ...workoutStore.workoutSettings }
+      
+      // Request notification permission
+      if ('Notification' in window && Notification.permission === 'default') {
+        const permission = await Notification.requestPermission()
+        if (permission === 'granted') {
+          showProgressNotification('Welcome!', 'Notifications enabled for workout progress')
         }
       }
+      
+      // Check if there's an active workout to resume
+      if (workoutStore.activeWorkout) {
+        activeWorkout.value = workoutStore.activeWorkout
+      }
+    })
+
+    // Methods
+    function selectFolder(folder) {
+      selectedFolder.value = folder
+      currentView.value = 'plans'
     }
-    
-    const editRoutine = (routine) => {
-      console.log('Edit routine:', routine)
+
+    function backToFolders() {
+      selectedFolder.value = null
+      currentView.value = 'folders'
     }
-    
-    const deleteRoutine = async (routineId) => {
-      if (confirm('Are you sure you want to delete this routine?')) {
-        try {
-          await workoutStore.deleteRoutine(routineId)
-        } catch (error) {
-          console.error('Delete routine error:', error)
-        }
+
+    async function startWorkout(plan) {
+      try {
+        activeWorkout.value = await workoutStore.startWorkout(plan.id)
+        showProgressNotification('Workout Started', `Let's crush ${plan.name}!`)
+      } catch (error) {
+        console.error('Error starting workout:', error)
+        alert('Failed to start workout. Please try again.')
       }
     }
-    
-    const viewRoutine = (routine) => {
-      console.log('View routine:', routine)
+
+    function onWorkoutComplete(workout) {
+      activeWorkout.value = null
+      
+      // Calculate stats
+      const duration = Math.floor((new Date(workout.completed_at) - new Date(workout.started_at)) / 1000)
+      const minutes = Math.floor(duration / 60)
+      
+      showProgressNotification(
+        'Workout Complete! 💪',
+        `Great job! You completed ${workout.total_sets || 0} sets in ${minutes} minutes.`
+      )
+      
+      // Navigate back to plans
+      currentView.value = 'plans'
     }
-    
+
+    function onWorkoutCancel() {
+      activeWorkout.value = null
+      currentView.value = 'plans'
+    }
+
+    function saveSettings() {
+      workoutStore.saveSettings(settings.value)
+      showSettings.value = false
+      showProgressNotification('Settings Saved', 'Your workout preferences have been updated')
+    }
+
+    function showProgressNotification(title, message) {
+      progressNotification.value = { title, message }
+      
+      // Auto-hide after 5 seconds
+      setTimeout(() => {
+        progressNotification.value = null
+      }, 5000)
+      
+      // Also show browser notification if enabled
+      if (settings.value.enableNotifications && 'Notification' in window && Notification.permission === 'granted') {
+        new Notification(title, {
+          body: message,
+          icon: '/icon.png',
+          tag: 'workout-progress'
+        })
+      }
+    }
+
+    // Watch for progress events from store
+    watch(() => workoutStore.exerciseLogs, (newLogs, oldLogs) => {
+      if (newLogs.length > oldLogs?.length) {
+        const latestLog = newLogs[0]
+        if (latestLog?.progression_data?.progressType === 'weight') {
+          showProgressNotification(
+            'Weight Increased! 🎉',
+            latestLog.progression_data.message
+          )
+        } else if (latestLog?.progression_data?.progressType === 'reps') {
+          showProgressNotification(
+            'Rep Progress! 💪',
+            latestLog.progression_data.message
+          )
+        }
+      }
+    }, { deep: true })
+
     return {
       workoutStore,
-      showCreateFolder,
-      showCreateRoutine,
-      getRoutinesForFolder,
-      editFolder,
-      deleteFolder,
-      editRoutine,
-      deleteRoutine,
-      viewRoutine
+      currentView,
+      selectedFolder,
+      activeWorkout,
+      showSettings,
+      progressNotification,
+      settings,
+      selectFolder,
+      backToFolders,
+      startWorkout,
+      onWorkoutComplete,
+      onWorkoutCancel,
+      saveSettings,
+      showProgressNotification
     }
   }
 }
@@ -155,108 +265,166 @@ export default {
 
 <style scoped>
 .workouts-page {
-  max-width: 1200px;
-  margin: 0 auto;
+  min-height: 100vh;
+  position: relative;
 }
 
-.page-header {
+/* Settings FAB */
+.settings-fab {
+  position: fixed;
+  bottom: var(--spacing-xl);
+  right: var(--spacing-xl);
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  background: var(--primary);
+  color: white;
+  border: none;
+  font-size: var(--font-size-xl);
+  cursor: pointer;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+  transition: all 0.3s ease;
+  z-index: 100;
+}
+
+.settings-fab:hover {
+  transform: scale(1.1);
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.3);
+}
+
+/* Progress Notification */
+.progress-notification {
+  position: fixed;
+  bottom: var(--spacing-xl);
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--bg-card);
+  border: 2px solid var(--primary);
+  border-radius: var(--radius-lg);
+  padding: var(--spacing-md) var(--spacing-lg);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
   display: flex;
-  justify-content: space-between;
   align-items: center;
+  gap: var(--spacing-md);
+  z-index: 1000;
+  max-width: 400px;
+  width: 90%;
+}
+
+.notification-content h4 {
+  margin: 0 0 var(--spacing-xs) 0;
+  color: var(--primary);
+}
+
+.notification-content p {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: var(--font-size-sm);
+}
+
+.close-btn {
+  background: transparent;
+  border: none;
+  font-size: var(--font-size-xl);
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 0;
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.close-btn:hover {
+  color: var(--text-primary);
+}
+
+/* Animations */
+.slide-up-enter-active,
+.slide-up-leave-active {
+  transition: all 0.3s ease;
+}
+
+.slide-up-enter-from {
+  transform: translate(-50%, 100%);
+  opacity: 0;
+}
+
+.slide-up-leave-to {
+  transform: translate(-50%, 100%);
+  opacity: 0;
+}
+
+/* Settings Modal */
+.modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.modal-content {
+  background: var(--bg-card);
+  border-radius: var(--radius-lg);
+  padding: var(--spacing-xl);
+  max-width: 500px;
+  width: 90%;
+  max-height: 90vh;
+  overflow-y: auto;
+}
+
+.modal-content h2 {
+  margin-top: 0;
+  margin-bottom: var(--spacing-lg);
+  color: var(--text-primary);
+}
+
+.settings-form {
   margin-bottom: var(--spacing-xl);
 }
 
-.loading-state,
-.empty-state {
-  text-align: center;
-  padding: var(--spacing-2xl);
-}
-
-.loading-state .spinner {
-  margin: 0 auto var(--spacing-md);
-}
-
-.folders-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(350px, 1fr));
-  gap: var(--spacing-lg);
-}
-
-.folder-card {
-  height: fit-content;
-}
-
-.folder-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-  margin-bottom: var(--spacing-md);
-}
-
-.folder-header h3 {
-  margin-bottom: 0;
-  flex: 1;
-}
-
-.folder-actions {
-  display: flex;
-  gap: var(--spacing-xs);
-}
-
-.folder-description {
-  color: var(--text-secondary);
+.form-group {
   margin-bottom: var(--spacing-lg);
 }
 
-.routines-section {
-  border-top: 1px solid var(--border-light);
-  padding-top: var(--spacing-md);
-}
-
-.routines-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: var(--spacing-md);
-}
-
-.routines-header h4 {
-  margin-bottom: 0;
-}
-
-.empty-routines {
-  text-align: center;
-  padding: var(--spacing-lg);
-  color: var(--text-muted);
-}
-
-.routines-list {
-  display: flex;
-  flex-direction: column;
-  gap: var(--spacing-sm);
-}
-
-.routine-item {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: var(--spacing-md);
-  background-color: var(--bg-secondary);
-  border-radius: var(--radius-md);
-}
-
-.routine-info h5 {
+.form-group label {
+  display: block;
   margin-bottom: var(--spacing-xs);
-}
-
-.routine-info p {
-  margin-bottom: 0;
-  font-size: var(--font-size-sm);
+  font-weight: 500;
   color: var(--text-secondary);
+  cursor: pointer;
 }
 
-.routine-actions {
-  display: flex;
-  gap: var(--spacing-xs);
+.form-group label input[type="checkbox"] {
+  margin-right: var(--spacing-sm);
+  cursor: pointer;
 }
-</style> 
+
+.form-input {
+  width: 100%;
+  padding: var(--spacing-sm) var(--spacing-md);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-md);
+  font-size: var(--font-size-base);
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+}
+
+.form-input:focus {
+  outline: none;
+  border-color: var(--primary);
+}
+
+.modal-actions {
+  display: flex;
+  gap: var(--spacing-md);
+  justify-content: flex-end;
+}
+</style>
