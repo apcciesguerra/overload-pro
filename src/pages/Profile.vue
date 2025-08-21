@@ -45,7 +45,7 @@
           </div>
           
           <div class="stat-item">
-            <div class="stat-number">{{ workoutStore.routines.length }}</div>
+            <div class="stat-number">{{ workoutStore.workoutPlans.length }}</div>
             <div class="stat-label">Total Routines</div>
           </div>
           
@@ -192,7 +192,7 @@ export default {
       const data = {
         user: authStore.user,
         folders: workoutStore.foldersByUser,
-        routines: workoutStore.routines,
+        workoutPlans: workoutStore.workoutPlans,
         exercises: workoutStore.exercises,
         exerciseLogs: workoutStore.exerciseLogs,
         exportedAt: new Date().toISOString()
