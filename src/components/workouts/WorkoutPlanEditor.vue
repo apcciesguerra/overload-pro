@@ -58,46 +58,36 @@
             No exercises added yet
           </div>
 
-          <draggable 
-            v-else
-            v-model="exercisesList[plan.id]"
-            @end="onExerciseReorder(plan.id)"
-            handle=".drag-handle"
-            class="exercises-list"
-          >
-            <template #item="{ element: exercise }">
-              <div class="exercise-item">
-                <span class="drag-handle">⋮⋮</span>
-                
-                <div class="exercise-details">
-                  <h5>{{ exercise.name }}</h5>
-                  <div class="exercise-params">
-                    <span class="param">
-                      Sets: {{ exercise.sets_config?.length || exercise.sets || 3 }}
-                    </span>
-                    <span class="param">
-                      Reps: {{ exercise.reps_min }}-{{ exercise.reps_max }}
-                    </span>
-                    <span class="param" v-if="exercise.rest_time">
-                      Rest: {{ exercise.rest_time }}s
-                    </span>
-                    <span class="param" v-if="exercise.equipment">
-                      {{ exercise.equipment }}
-                    </span>
-                  </div>
+          <!-- TODO: Add drag-and-drop reordering when order_index is available in DB -->
+          <div v-else class="exercises-list">
+            <div 
+              v-for="exercise in getExercises(plan.id)" 
+              :key="exercise.id"
+              class="exercise-item"
+            >
+              <div class="exercise-details">
+                <h5>{{ exercise.name }}</h5>
+                <div class="exercise-params">
+                  <span class="param">
+                    {{ exercise.target_sets || 3 }} sets of {{ exercise.target_reps || 8 }} reps
+                  </span>
+                  <!-- TODO: Future features - Rep ranges, rest timers, equipment tracking -->
                 </div>
-
-                <div class="exercise-actions">
-                  <button @click="editExercise(exercise)" class="btn-icon" title="Edit">
-                    ✏️
-                  </button>
-                  <button @click="deleteExercise(exercise)" class="btn-icon" title="Delete">
-                    🗑️
-                  </button>
+                <div v-if="exercise.description" class="exercise-description">
+                  {{ exercise.description }}
                 </div>
               </div>
-            </template>
-          </draggable>
+
+              <div class="exercise-actions">
+                <button @click="editExercise(exercise)" class="btn-icon" title="Edit">
+                  ✏️
+                </button>
+                <button @click="deleteExercise(exercise)" class="btn-icon" title="Delete">
+                  🗑️
+                </button>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -170,14 +160,12 @@
 
 <script>
 import { ref, computed, watch } from 'vue'
-import { VueDraggableNext } from 'vue-draggable-next'
 import { useWorkoutStore } from '../../store/useWorkoutStore'
 import ExerciseEditor from './ExerciseEditor.vue'
 
 export default {
   name: 'WorkoutPlanEditor',
   components: {
-    draggable: VueDraggableNext,
     ExerciseEditor
   },
   props: {
@@ -288,7 +276,7 @@ export default {
     }
 
     const editExercise = (exercise) => {
-      currentPlanId.value = exercise.plan_id
+      currentPlanId.value = exercise.routine_id // Updated to match database schema
       editingExercise.value = exercise
       showExerciseModal.value = true
     }
@@ -326,18 +314,8 @@ export default {
       }
     }
 
-    const onExerciseReorder = async (planId) => {
-      const exercises = exercisesList.value[planId]
-      const exerciseIds = exercises.map(e => e.id)
-      
-      try {
-        await workoutStore.reorderExercises(planId, exerciseIds)
-      } catch (error) {
-        console.error('Error reordering exercises:', error)
-        // Revert on error
-        updateExercisesLists()
-      }
-    }
+    // TODO: Implement exercise reordering when order_index is available in DB
+    // const onExerciseReorder = async (planId) => { ... }
 
     // Initialize
     updateExercisesLists()
@@ -365,7 +343,7 @@ export default {
       closeExerciseModal,
       saveExercise,
       deleteExercise,
-      onExerciseReorder
+      // onExerciseReorder - removed since drag/drop disabled
     }
   }
 }
@@ -511,6 +489,13 @@ export default {
   padding: var(--spacing-xs) var(--spacing-sm);
   background: var(--bg-secondary);
   border-radius: var(--radius-sm);
+}
+
+.exercise-description {
+  margin-top: var(--spacing-xs);
+  font-size: var(--font-size-sm);
+  color: var(--text-muted);
+  font-style: italic;
 }
 
 .exercise-actions {
